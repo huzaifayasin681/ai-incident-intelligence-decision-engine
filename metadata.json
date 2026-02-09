@@ -1,0 +1,10 @@
+
+{
+  "name": "AI Incident Intelligence & Decision Engine",
+  "description": "A high-stakes incident analysis platform using Gemini 3 and Neo-Brutalist UI for real-time risk assessment and reasoning visualization.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
