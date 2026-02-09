@@ -5,16 +5,24 @@ import { GoogleGenAI, Modality } from '@google/genai';
 export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model') => void) => {
   const [isActive, setIsActive] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle');
   const sessionRef = useRef<any>(null);
   const nextStartTimeRef = useRef(0);
   const streamRef = useRef<MediaStream | null>(null);
   const frameIntervalRef = useRef<number | null>(null);
   const isPausedRef = useRef(false);
 
+  // Audio nodes for visualization
+  const inputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const outputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const audioContextsRef = useRef<{ input: AudioContext; output: AudioContext } | null>(null);
+
   const togglePause = useCallback(() => {
     const newState = !isPausedRef.current;
     isPausedRef.current = newState;
     setIsPaused(newState);
+    if (newState) setStatus('idle');
+    else setStatus('listening');
   }, []);
 
   const stop = useCallback(() => {
@@ -30,9 +38,15 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
       window.clearInterval(frameIntervalRef.current);
       frameIntervalRef.current = null;
     }
+    if (audioContextsRef.current) {
+      audioContextsRef.current.input.close();
+      audioContextsRef.current.output.close();
+      audioContextsRef.current = null;
+    }
     setIsActive(false);
     setIsPaused(false);
     isPausedRef.current = false;
+    setStatus('idle');
   }, []);
 
   const start = useCallback(async (videoElement?: HTMLVideoElement) => {
@@ -40,9 +54,19 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
     setIsActive(true);
     setIsPaused(false);
     isPausedRef.current = false;
+    setStatus('listening');
 
     const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    audioContextsRef.current = { input: inputCtx, output: outputCtx };
+
+    const inputAnalyser = inputCtx.createAnalyser();
+    inputAnalyser.fftSize = 256;
+    inputAnalyserRef.current = inputAnalyser;
+
+    const outputAnalyser = outputCtx.createAnalyser();
+    outputAnalyser.fftSize = 256;
+    outputAnalyserRef.current = outputAnalyser;
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: !!videoElement });
     streamRef.current = stream;
@@ -53,9 +77,9 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
       callbacks: {
         onopen: () => {
           const source = inputCtx.createMediaStreamSource(stream);
+          source.connect(inputAnalyser);
           const processor = inputCtx.createScriptProcessor(4096, 1, 1);
           processor.onaudioprocess = (e) => {
-            // Do not send audio if paused
             if (isPausedRef.current) return;
             
             const inputData = e.inputBuffer.getChannelData(0);
@@ -71,7 +95,6 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             frameIntervalRef.current = window.setInterval(() => {
-              // Do not send frames if paused
               if (isPausedRef.current) return;
 
               canvas.width = videoElement.videoWidth / 4;
@@ -83,11 +106,17 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
           }
         },
         onmessage: async (msg) => {
-          if (msg.serverContent?.inputTranscription) onTranscript(msg.serverContent.inputTranscription.text, 'user');
-          if (msg.serverContent?.outputTranscription) onTranscript(msg.serverContent.outputTranscription.text, 'model');
+          if (msg.serverContent?.inputTranscription) {
+            onTranscript(msg.serverContent.inputTranscription.text, 'user');
+            setStatus('thinking');
+          }
+          if (msg.serverContent?.outputTranscription) {
+            onTranscript(msg.serverContent.outputTranscription.text, 'model');
+          }
 
           const audioB64 = msg.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
           if (audioB64) {
+            setStatus('responding');
             const bytes = Uint8Array.from(atob(audioB64), c => c.charCodeAt(0));
             const dataInt16 = new Int16Array(bytes.buffer);
             const buffer = outputCtx.createBuffer(1, dataInt16.length, 24000);
@@ -96,13 +125,24 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
 
             const source = outputCtx.createBufferSource();
             source.buffer = buffer;
-            source.connect(outputCtx.destination);
+            source.connect(outputAnalyser);
+            outputAnalyser.connect(outputCtx.destination);
+            
             const startAt = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
             source.start(startAt);
             nextStartTimeRef.current = startAt + buffer.duration;
+
+            source.onended = () => {
+              if (outputCtx.currentTime >= nextStartTimeRef.current - 0.1) {
+                setStatus('listening');
+              }
+            };
           }
         },
-        onerror: (e) => console.error("Live Error", e),
+        onerror: (e) => {
+          console.error("Live Error", e);
+          setStatus('idle');
+        },
         onclose: () => stop(),
       },
       config: {
@@ -117,5 +157,14 @@ export const useLiveVoice = (onTranscript: (text: string, type: 'user' | 'model'
     sessionRef.current = await sessionPromise;
   }, [onTranscript, stop]);
 
-  return { isActive, isPaused, togglePause, start, stop };
+  return { 
+    isActive, 
+    isPaused, 
+    status,
+    togglePause, 
+    start, 
+    stop, 
+    inputAnalyser: inputAnalyserRef.current, 
+    outputAnalyser: outputAnalyserRef.current 
+  };
 };

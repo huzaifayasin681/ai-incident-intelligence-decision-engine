@@ -5,6 +5,7 @@ import { IncidentReport, SeverityColor, GroundingChunk } from './types';
 import { NeoCard } from './components/NeoCard';
 import { NeoButton } from './components/NeoButton';
 import { useLiveVoice } from './hooks/useLiveVoice';
+import { AudioVisualizer } from './components/AudioVisualizer';
 
 const App: React.FC = () => {
   const [reports, setReports] = useState<IncidentReport[]>([]);
@@ -48,7 +49,16 @@ const App: React.FC = () => {
     }
   }, [liveThinking]);
 
-  const { isActive: isVoiceActive, isPaused: isVoicePaused, togglePause: toggleVoicePause, start: startVoice, stop: stopVoice } = useLiveVoice((text, type) => {
+  const { 
+    isActive: isVoiceActive, 
+    isPaused: isVoicePaused, 
+    status: voiceStatus,
+    togglePause: toggleVoicePause, 
+    start: startVoice, 
+    stop: stopVoice,
+    inputAnalyser,
+    outputAnalyser
+  } = useLiveVoice((text, type) => {
     if (type === 'model') {
       const cleanText = text.replace(/[*#_`]/g, '');
       setLiveThinking(prev => prev + "\n[COMMS]: " + cleanText);
@@ -100,7 +110,6 @@ const App: React.FC = () => {
       const b64 = await generateBriefingAudio(selectedReport.analysis);
       const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
       
-      // Close existing context if any
       if (debriefAudioContextRef.current) {
         await debriefAudioContextRef.current.close();
       }
@@ -182,6 +191,22 @@ const App: React.FC = () => {
     }
   };
 
+  const StatusBadge = ({ status }: { status: string }) => {
+    const config: Record<string, { color: string, label: string }> = {
+      listening: { color: 'bg-green-400', label: 'INGESTING_BIO_SIGNAL' },
+      thinking: { color: 'bg-yellow-400', label: 'CORE_THROUGHPUT' },
+      responding: { color: 'bg-cyan-400', label: 'NEURAL_OUTPUT' },
+      idle: { color: 'bg-gray-400', label: 'PROBE_STANDBY' }
+    };
+    const s = config[status] || config.idle;
+    return (
+      <div className={`px-2 py-1 text-[10px] font-black uppercase flex items-center gap-2 border-2 border-black ${s.color}`}>
+        <div className={`w-2 h-2 rounded-full border border-black ${status !== 'idle' ? 'animate-pulse' : ''} bg-white`}></div>
+        {s.label}
+      </div>
+    );
+  };
+
   if (needsApiKey) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-6">
@@ -244,14 +269,32 @@ const App: React.FC = () => {
         <div className="xl:col-span-4 space-y-12">
           {isVoiceActive && (
             <NeoCard title="LIVE VISUAL FEED" bgColor="bg-black">
-              <div className="relative overflow-hidden border-4 border-white">
+              <div className="relative overflow-hidden border-4 border-white mb-4">
                 {isVoicePaused && (
                   <div className="absolute inset-0 z-20 bg-black/60 flex items-center justify-center">
                     <span className="text-white font-black text-2xl tracking-widest animate-pulse uppercase">Signal On Hold</span>
                   </div>
                 )}
+                <div className="absolute top-4 right-4 z-20">
+                  <StatusBadge status={isVoicePaused ? 'idle' : voiceStatus} />
+                </div>
                 <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.1)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-10 pointer-events-none bg-[length:100%_4px,3px_100%] animate-scanlines"></div>
                 <video ref={liveVideoRef} autoPlay muted className={`w-full aspect-video grayscale contrast-150 ${isVoicePaused ? 'blur-sm' : ''}`} />
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="border-4 border-white p-2 bg-neutral-900">
+                  <div className="text-[8px] font-black text-white uppercase mb-1">Input Gain</div>
+                  <div className="h-8">
+                    <AudioVisualizer analyser={inputAnalyser} color="#4ade80" />
+                  </div>
+                </div>
+                <div className="border-4 border-white p-2 bg-neutral-900">
+                  <div className="text-[8px] font-black text-white uppercase mb-1">Neural Sync</div>
+                  <div className="h-8">
+                    <AudioVisualizer analyser={outputAnalyser} color="#22d3ee" />
+                  </div>
+                </div>
               </div>
             </NeoCard>
           )}
@@ -274,6 +317,7 @@ const App: React.FC = () => {
                <div className="absolute inset-0 bg-[rgba(18,16,16,0.1)] pointer-events-none z-10 animate-pulse"></div>
               <div ref={terminalRef} className="font-mono text-xs h-[250px] overflow-y-auto p-4 leading-relaxed custom-scrollbar whitespace-pre-wrap">
                 {isVoicePaused && <div className="text-pink-400 mb-2">[SYSTEM_HOLD] DATA INGESTION SUSPENDED...</div>}
+                {!isVoicePaused && isVoiceActive && <div className="text-green-400 mb-2 animate-pulse">[READY] BIO_DATA_STREAM_ACTIVE</div>}
                 {liveThinking || "> [SYSTEM] SYNCING_CORES..."}
               </div>
             </NeoCard>
